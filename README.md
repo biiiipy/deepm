@@ -191,6 +191,38 @@ The column tickers map to the following 50 assets:
 Missing values (e.g. for contracts that started trading after 1990) should be left
 as `NaN`; the feature pipeline handles them automatically.
 
+### Ticker naming conventions
+
+The codebase uses two ticker conventions:
+
+- **Short codes** (`EN`, `ES`, `ZG`, `AN`, etc.) — used in the raw data columns,
+  the feature parquet, the transaction cost file (`configs/tcost/`), and the
+  `ticker_subset` list in training configs.
+- **Bloomberg tickers** (`NQ1 Index`, `ES1 Index`, `GC1 Comdty`, `AD1 Curncy`,
+  etc.) — used by the GNN adjacency matrix (`macro_adjacency_normalized.csv`) and
+  internally by the DeePM model during training and inference.
+
+The `ticker_mapping` dictionary in each training and backtest config bridges the
+two conventions, mapping every short code to its Bloomberg equivalent:
+
+```yaml
+ticker_mapping:
+  EN: "NQ1 Index"
+  ES: "ES1 Index"
+  ZG: "GC1 Comdty"
+  AN: "AD1 Curncy"
+  # ... (all 50 assets)
+```
+
+When `ticker_mapping` is present, the pipeline applies it at data-load time so
+that all downstream components (datasets, models, diagnostics) operate on
+Bloomberg tickers. This is required for the GNN, which looks up assets by their
+Bloomberg ticker in the adjacency matrix.
+
+> **If you are not using the GNN** (e.g. the `deepm-independent` or
+> `MOM_TRANS` configs), `ticker_mapping` can be omitted — the pipeline will
+> use the short codes throughout.
+
 ### Feature preparation
 
 The feature preparation step (`scripts/prepare_features.py`) converts the raw price
@@ -238,6 +270,12 @@ To use your own cost estimates, create a CSV with the same schema and point
 `ticker_reference_file` in your configs to its filename (without path — the
 loader looks in `configs/tcost/`).
 
+> **Important:** Every ticker in your training config's `ticker_subset` and
+> backtest config's `universe` must have a matching row in the transaction cost
+> file. The pipeline validates this at startup and exits with an error listing
+> any missing tickers. If you add new assets, add corresponding rows to the
+> tcost CSV before training or backtesting.
+
 ## Reproduction
 
 ### Quick Start
@@ -273,7 +311,25 @@ The pipeline steps are:
 python scripts/build_graph.py
 ```
 
-Produces `macro_adjacency_normalized.csv` encoding macro-economic relationships between assets.
+Produces `macro_adjacency_normalized.csv` encoding macro-economic relationships
+between assets. The matrix is indexed by Bloomberg-style tickers (e.g.
+`ES1 Index`, `GC1 Comdty`) and is loaded by the DeePM model at training time.
+
+> **Custom universes:** If you change the asset universe, you must update
+> `scripts/build_graph.py` to reflect your new assets. Specifically:
+>
+> - **`ASSET_LIST`** — the ordered list of Bloomberg tickers (defines row/column
+>   order of the adjacency matrix).
+> - **`MACRO_GROUPS`** — assigns each asset to a macro group (e.g. `EQUITY_US`,
+>   `COMM_ENERGY`). Assets within the same group are connected automatically.
+> - **`REGIONAL_LINKS`** — defines cross-asset-class connections within regions
+>   (e.g. US equities ↔ US Treasuries ↔ USD).
+> - **Macro story rules** (lines 113–160) — encode economic relationships like
+>   risk-on, inflation, and safe-haven links. Add or remove links as appropriate
+>   for your universe.
+>
+> After editing, re-run `python scripts/build_graph.py` to regenerate the
+> adjacency CSV. You can use `--verify` to spot-check specific edges.
 
 **2. Prepare features**
 
